@@ -13,5 +13,6 @@ Using a precisely control of a heat source this project can also be converted to
  - 3950 NTC Thermistor with 100k ohms
  - LED's
  - Resistors
+
 *(schematics still not available)* Check the schematics for the resistors values
 
