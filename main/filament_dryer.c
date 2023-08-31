@@ -17,8 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "hd44780.h"
-#include "pcf8574.h"
+#include "lcd1602_i2c.h"
 #include "sdkconfig.h"
 
 #define ADC_CHANNEL ADC1_CHANNEL_4
@@ -27,16 +26,16 @@
 #define BETA 3950
 #define R_REF 10000.0
 #define R_NTC 100000.0
-#define T0 298.15  // 25 + 273.15
+#define T0 298.15 // 25 + 273.15
 
-#define SAMPLING_FREQUENCY 20  // HZ
+#define SAMPLING_FREQUENCY 20 // HZ
 #define PID_MAXOUTPUT \
-    1023  // Maximum control output magnitude (change this if your
-          // microcontroller has a greater max value)
-#define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY  // Sampling time (seconds)
-#define CONSTANT_Kp 20.0f                        // Proportional gain
-#define CONSTANT_Ki 0.0f   // Integral gain times SAMPLING_TIME
-#define CONSTANT_Kd 10.0f  // Derivative gain divided by SAMPLING_TIME
+    1023                                        // Maximum control output magnitude (change this if your
+                                                // microcontroller has a greater max value)
+#define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY // Sampling time (seconds)
+#define CONSTANT_Kp 20.0f                       // Proportional gain
+#define CONSTANT_Ki 0.0f                        // Integral gain times SAMPLING_TIME
+#define CONSTANT_Kd 10.0f                       // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
 
 static const char *TAG = "Filament_Dryer";
@@ -48,18 +47,14 @@ volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
 int16_t temperatureArray[MOVING_AVERAGE_SIZE];
 int32_t integral = 0;
-
-static i2c_dev_t pcf8574;
+char buffer[10];
+float num = 12.34;
 
 esp_adc_cal_characteristics_t adc_chars;
 static ledc_channel_config_t ledc_channel;
 
-static esp_err_t write_lcd_data(const hd44780_t *lcd, uint8_t data)
+uint16_t PID_update(uint16_t currentTemperature)
 {
-    return pcf8574_port_write(&pcf8574, data);
-}
-
-uint16_t PID_update(uint16_t currentTemperature) {
     // e[k] = r[k] - y[k], error between setpoint and true position
     int16_t error = targetTemperature - currentTemperature;
     // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
@@ -76,13 +71,14 @@ uint16_t PID_update(uint16_t currentTemperature) {
         control_u = PID_MAXOUTPUT;
     else if (control_u < 0)
         control_u = 0;
-    else  // Anti-windup
+    else // Anti-windup
         integral = new_integral;
 
     return (uint16_t)control_u;
 }
 
-float ThermistorReading() {
+float ThermistorReading()
+{
     float voltage_read =
         esp_adc_cal_raw_to_voltage(adc1_get_raw(ADC_CHANNEL), &adc_chars);
     float resistance = (R_REF * voltage_read) / (3300 - voltage_read);
@@ -92,17 +88,20 @@ float ThermistorReading() {
 }
 
 // ISR handler
-void TemperatureReadTask(void *arg) {
+void TemperatureReadTask(void *arg)
+{
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pdMS_TO_TICKS(50);
     // BaseType_t xWasDelayed;
     xLastWakeTime = xTaskGetTickCount();
-    while (1) {
+    while (1)
+    {
         temperatureArray[movingAveragePosition] = round(ThermistorReading());
         movingAveragePosition =
             (movingAveragePosition + 1) % MOVING_AVERAGE_SIZE;
         int temperatureSum = 0;
-        for (int i = 0; i < MOVING_AVERAGE_SIZE; i++) {
+        for (int i = 0; i < MOVING_AVERAGE_SIZE; i++)
+        {
             temperatureSum += temperatureArray[i];
         }
         currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
@@ -114,17 +113,41 @@ void TemperatureReadTask(void *arg) {
     }
 }
 
-static void IRAM_ATTR gpio_isr_handler() {
-    if (gpio_get_level(GPIO_NUM_19) == 1) {
-        if (gpio_get_level(GPIO_NUM_19) == gpio_get_level(GPIO_NUM_18)) {
+static void IRAM_ATTR gpio_isr_handler()
+{
+    if (gpio_get_level(GPIO_NUM_19) == 1)
+    {
+        if (gpio_get_level(GPIO_NUM_19) == gpio_get_level(GPIO_NUM_18))
+        {
             targetTemperature += 10;
-        } else {
+        }
+        else
+        {
             targetTemperature -= 10;
         }
     }
 }
 
-void app_main() {
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_NUM_0;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = GPIO_NUM_21,
+        .scl_io_num = GPIO_NUM_22,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, 0, 0, 0);
+}
+
+void app_main()
+{
     adc1_config_width(ADC_WIDTH);
     adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN);
 
@@ -169,40 +192,40 @@ void app_main() {
 
     esp_err_t result =
         gpio_isr_handler_add(GPIO_NUM_18, gpio_isr_handler, (void *)1);
-    if (result == ESP_OK) {
-        ESP_LOGI(TAG, "HAndler cadastrado");
-    } else {
+    if (result == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Handler cadastrado");
+    }
+    else
+    {
         ESP_LOGI(TAG, "Handler não cadastrado");
     }
 
-    hd44780_t lcd = {
-        .write_cb = write_lcd_data,  // use callback to send data to LCD by I2C
-                                     // GPIO expander
-        .font = HD44780_FONT_5X8,
-        .lines = 2,
-        .pins = {.rs = 0, .e = 2, .d4 = 4, .d5 = 5, .d6 = 6, .d7 = 7, .bl = 3}};
-    ESP_LOGI(TAG, "OK1");
-    memset(&pcf8574, 0, sizeof(i2c_dev_t));
-    ESP_LOGI(TAG, "OK2");
-    ESP_ERROR_CHECK(pcf8574_init_desc(&pcf8574, 0x3F, 0, GPIO_NUM_21, GPIO_NUM_22));
-    ESP_LOGI(TAG, "OK3");
+    ESP_ERROR_CHECK(i2c_master_init());
+    ESP_LOGI(TAG, "I2C initialized successfully");
 
-    ESP_ERROR_CHECK(hd44780_init(&lcd));
+    lcd_init();
+    lcd_clear();
 
-    hd44780_switch_backlight(&lcd, true);
+    lcd_put_cur(0, 0);
+    lcd_send_string("Hello world!");
 
-    hd44780_gotoxy(&lcd, 0, 0);
-    hd44780_puts(&lcd, "Hello world!");
-    hd44780_gotoxy(&lcd, 0, 1);
-    hd44780_puts(&lcd, "12345678901 ");
+    lcd_put_cur(1, 0);
+    lcd_send_string("from ESP32");
 
-    for (int i = 0; i < MOVING_AVERAGE_SIZE; i++) {
+    // sprintf(buffer, "val=%.2f", num);
+    // lcd_put_cur(0, 0);
+    // lcd_send_string(buffer);
+
+    for (int i = 0; i < MOVING_AVERAGE_SIZE; i++)
+    {
         temperatureArray[i] = round(ThermistorReading());
     }
     char message[16];
     xTaskCreate(&TemperatureReadTask, "TemperatureReadTask", 2048, NULL, 5,
                 NULL);
-    while (true) {
+    while (true)
+    {
         sprintf(message, "%d/%d", (int)currentTemperature,
                 (int)targetTemperature);
         ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | Heat: %s",
