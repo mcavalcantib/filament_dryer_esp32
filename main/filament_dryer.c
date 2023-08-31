@@ -47,8 +47,7 @@ volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
 int16_t temperatureArray[MOVING_AVERAGE_SIZE];
 int32_t integral = 0;
-char buffer[10];
-float num = 12.34;
+char buffer[16];
 
 esp_adc_cal_characteristics_t adc_chars;
 static ledc_channel_config_t ledc_channel;
@@ -165,7 +164,7 @@ void app_main()
 
     ledc_channel.channel = LEDC_CHANNEL_0;
     ledc_channel.duty = 0;
-    ledc_channel.gpio_num = GPIO_NUM_27;
+    ledc_channel.gpio_num = GPIO_NUM_23;
     ledc_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
     ledc_channel.hpoint = 0;
     ledc_channel.timer_sel = LEDC_TIMER_0;
@@ -207,12 +206,6 @@ void app_main()
     lcd_init();
     lcd_clear();
 
-    lcd_put_cur(0, 0);
-    lcd_send_string("Hello world!");
-
-    lcd_put_cur(1, 0);
-    lcd_send_string("from ESP32");
-
     // sprintf(buffer, "val=%.2f", num);
     // lcd_put_cur(0, 0);
     // lcd_send_string(buffer);
@@ -226,8 +219,15 @@ void app_main()
                 NULL);
     while (true)
     {
-        sprintf(message, "%d/%d", (int)currentTemperature,
+        memset(message, 0, 16);
+        sprintf(message, "%d/%d   ", (int)currentTemperature,
                 (int)targetTemperature);
+
+        lcd_put_cur(0, 0);
+        lcd_send_string("Heater: off");
+
+        lcd_put_cur(1, 0);
+        lcd_send_string(message);
         ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | Heat: %s",
                  (int)currentTemperature, (int)targetTemperature, output,
                  isHeating ? "ON" : "OFF");
