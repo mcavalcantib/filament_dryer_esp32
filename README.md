@@ -16,3 +16,5 @@ Using a precisely control of a heat source this project can also be converted to
 
 *(schematics still not available)* Check the schematics for the resistors values
 
+## References
+The code in the lcd component was extracted from the link [I2C in ESP32 || ESP-IDF || LCD 1602](https://controllerstech.com/i2c-in-esp32-esp-idf-lcd-1602/)
