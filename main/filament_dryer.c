@@ -13,7 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "driver/gpio.h"
+#include "soc/gpio_reg.h"
+#include <driver/gpio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -41,7 +42,7 @@
 static const char *TAG = "Filament_Dryer";
 
 static volatile float currentTemperature = 0.0;
-static volatile uint32_t targetTemperature = 0.0;
+static volatile uint32_t targetTemperature = 0.0, debounceTimeout = 1, lastInterrupt = 0;
 static volatile bool isHeating = false, dataPulse = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
@@ -106,25 +107,62 @@ void TemperatureReadTask(void *arg)
         currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
         // xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
         output = PID_update(currentTemperature);
-        ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, output);
-        ledc_update_duty(ledc_channel.speed_mode, ledc_channel.channel);
+        if (output > 160)
+        {
+            gpio_set_level(GPIO_NUM_23, 0);
+        }
+        else
+        {
+            gpio_set_level(GPIO_NUM_23, 1);
+        }
+
+        // ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, output);
+        // ledc_update_duty(ledc_channel.speed_mode, ledc_channel.channel);
         xTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
 static void IRAM_ATTR gpio_isr_handler()
 {
-    if (gpio_get_level(GPIO_NUM_19) == 1)
+    uint32_t pins = REG_READ(GPIO_IN_REG);
+    if (xTaskGetTickCount() - lastInterrupt > debounceTimeout)
     {
-        if (gpio_get_level(GPIO_NUM_19) == gpio_get_level(GPIO_NUM_18))
+        if (pins & 0x80000)
         {
-            targetTemperature += 10;
+            targetTemperature += 5;
         }
         else
         {
-            targetTemperature -= 10;
+            targetTemperature -= 5;
         }
+        lastInterrupt = xTaskGetTickCount();
     }
+    // pins &= ((1ULL << GPIO_NUM_19) | (1ULL << GPIO_NUM_18));
+    // targetTemperature = pins;
+    // if(pins & (1ULL << GPIO_NUM_19)){
+    //     targetTemperature += 5;
+    // }else{
+    //     targetTemperature -= 5;
+    // }
+    // if(pins == 0){
+    //     targetTemperature += 5;
+    // }else if(pins == 1){
+    //     targetTemperature -= 5;
+    // }
+    // else{
+    //     /*nothing*/
+    // }
+    // if (gpio_get_level(GPIO_NUM_19) == 1)
+    // {
+    //     if (gpio_get_level(GPIO_NUM_19) == gpio_get_level(GPIO_NUM_18))
+    //     {
+    //         targetTemperature += 10;
+    //     }
+    //     else
+    //     {
+    //         targetTemperature -= 10;
+    //     }
+    // }
 }
 
 static esp_err_t i2c_master_init(void)
@@ -152,26 +190,29 @@ void app_main()
 
     esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH, 0, &adc_chars);
 
-    ledc_timer_config_t ledc_timer = {
-        .duty_resolution = LEDC_TIMER_10_BIT,
-        .freq_hz = 1000,
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
-        .timer_num = LEDC_TIMER_0,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
+    // ledc_timer_config_t ledc_timer = {
+    //     .duty_resolution = LEDC_TIMER_10_BIT,
+    //     .freq_hz = 1000,
+    //     .speed_mode = LEDC_HIGH_SPEED_MODE,
+    //     .timer_num = LEDC_TIMER_0,
+    //     .clk_cfg = LEDC_AUTO_CLK,
+    // };
 
-    ledc_timer_config(&ledc_timer);
+    // ledc_timer_config(&ledc_timer);
 
-    ledc_channel.channel = LEDC_CHANNEL_0;
-    ledc_channel.duty = 0;
-    ledc_channel.gpio_num = GPIO_NUM_23;
-    ledc_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
-    ledc_channel.hpoint = 0;
-    ledc_channel.timer_sel = LEDC_TIMER_0;
-    ledc_channel_config(&ledc_channel);
+    // ledc_channel.channel = LEDC_CHANNEL_0;
+    // ledc_channel.duty = 0;
+    // ledc_channel.gpio_num = GPIO_NUM_23;
+    // ledc_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
+    // ledc_channel.hpoint = 0;
+    // ledc_channel.timer_sel = LEDC_TIMER_0;
+    // ledc_channel_config(&ledc_channel);
+
+    gpio_set_direction(GPIO_NUM_23, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_23, 0);
 
     // #18
-    gpio_config_t io_config = {.intr_type = GPIO_INTR_NEGEDGE,
+    gpio_config_t io_config = {.intr_type = GPIO_INTR_LOW_LEVEL,
                                .pin_bit_mask = (1ULL << GPIO_NUM_18),
                                .mode = GPIO_MODE_INPUT,
                                .pull_up_en = 1,
@@ -217,6 +258,7 @@ void app_main()
     char message[16];
     xTaskCreate(&TemperatureReadTask, "TemperatureReadTask", 2048, NULL, 5,
                 NULL);
+    bool relayStatus = false;
     while (true)
     {
         memset(message, 0, 16);
@@ -228,6 +270,8 @@ void app_main()
 
         lcd_put_cur(1, 0);
         lcd_send_string(message);
+        // gpio_set_level(GPIO_NUM_23, (int)relayStatus);
+        // relayStatus = !relayStatus;
         ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | Heat: %s",
                  (int)currentTemperature, (int)targetTemperature, output,
                  isHeating ? "ON" : "OFF");
