@@ -36,14 +36,19 @@
 #define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY // Sampling time (seconds)
 #define CONSTANT_Kp 20.0f                       // Proportional gain
 #define CONSTANT_Ki 0.0f                        // Integral gain times SAMPLING_TIME
-#define CONSTANT_Kd 10.0f                       // Derivative gain divided by SAMPLING_TIME
+#define CONSTANT_Kd 5.0f                       // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
+
+#define LOWER_LIMIT_OUTPUT 256
+#define UPPER_LIMIT_OUTPUT 1023
+#define MIN_OUTPUT_PULSE_DURATION 250
+#define MAX_OUTPUT_PULSE_DURATION 1000
 
 static const char *TAG = "Filament_Dryer";
 
 static volatile float currentTemperature = 0.0;
-static volatile uint32_t targetTemperature = 0.0, debounceTimeout = 1, lastInterrupt = 0;
-static volatile bool isHeating = false, dataPulse = false;
+static volatile uint32_t targetTemperature = 70.0, debounceTimeout = 1, lastInterrupt = 0, pulseStart = 0, pulseDuration;
+static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
 int16_t temperatureArray[MOVING_AVERAGE_SIZE];
@@ -92,8 +97,10 @@ void TemperatureReadTask(void *arg)
 {
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pdMS_TO_TICKS(50);
+    int highDuration = 0, lowDuration = 0;
     // BaseType_t xWasDelayed;
     xLastWakeTime = xTaskGetTickCount();
+    pulseStart = xTaskGetTickCount();
     while (1)
     {
         temperatureArray[movingAveragePosition] = round(ThermistorReading());
@@ -107,13 +114,24 @@ void TemperatureReadTask(void *arg)
         currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
         // xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
         output = PID_update(currentTemperature);
-        if (output > 160)
+        pulseDuration = (MAX_OUTPUT_PULSE_DURATION * output) / UPPER_LIMIT_OUTPUT;
+        if (0 < pulseDuration && pulseDuration < 250)
+            pulseDuration = 250;
+        else if (750 < pulseDuration && pulseDuration < 900)
+            pulseDuration = 750;
+        else if (pulseDuration >= 900)
+            pulseDuration = 1000;
+        if (xTaskGetTickCount() - pulseStart < pulseDuration / portTICK_PERIOD_MS)
         {
             gpio_set_level(GPIO_NUM_23, 0);
         }
         else
         {
             gpio_set_level(GPIO_NUM_23, 1);
+        }
+        if (xTaskGetTickCount() - pulseStart > MAX_OUTPUT_PULSE_DURATION / portTICK_PERIOD_MS)
+        {
+            pulseStart = xTaskGetTickCount();
         }
 
         // ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, output);
@@ -125,18 +143,18 @@ void TemperatureReadTask(void *arg)
 static void IRAM_ATTR gpio_isr_handler()
 {
     uint32_t pins = REG_READ(GPIO_IN_REG);
-    if (xTaskGetTickCount() - lastInterrupt > debounceTimeout)
-    {
-        if (pins & 0x80000)
-        {
-            targetTemperature += 5;
-        }
-        else
-        {
-            targetTemperature -= 5;
-        }
-        lastInterrupt = xTaskGetTickCount();
-    }
+    // if (xTaskGetTickCount() - lastInterrupt > debounceTimeout/portTICK_PERIOD_MS)
+    // {
+    //     if (pins & 0x80000)
+    //     {
+    //         targetTemperature += 5;
+    //     }
+    //     else
+    //     {
+    //         targetTemperature -= 5;
+    //     }
+    //     lastInterrupt = xTaskGetTickCount();
+    // }
     // pins &= ((1ULL << GPIO_NUM_19) | (1ULL << GPIO_NUM_18));
     // targetTemperature = pins;
     // if(pins & (1ULL << GPIO_NUM_19)){
@@ -272,8 +290,8 @@ void app_main()
         lcd_send_string(message);
         // gpio_set_level(GPIO_NUM_23, (int)relayStatus);
         // relayStatus = !relayStatus;
-        ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | Heat: %s",
-                 (int)currentTemperature, (int)targetTemperature, output,
+        ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | PulseDuration: %lu | Heat: %s",
+                 (int)currentTemperature, (int)targetTemperature, output, pulseDuration,
                  isHeating ? "ON" : "OFF");
 
         vTaskDelay(pdMS_TO_TICKS(250));
