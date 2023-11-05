@@ -21,7 +21,7 @@
 #include "lcd1602_i2c.h"
 #include "sdkconfig.h"
 
-#define ADC_CHANNEL ADC1_CHANNEL_4
+#define ADC_CHANNEL ADC1_CHANNEL_7
 #define ADC_WIDTH ADC_WIDTH_BIT_12
 #define ADC_ATTEN ADC_ATTEN_DB_11
 #define BETA 3950
