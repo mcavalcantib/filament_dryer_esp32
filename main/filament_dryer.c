@@ -12,12 +12,14 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_timer.h"
 
 #include "soc/gpio_reg.h"
 #include <driver/gpio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "DHT.h"
 #include "lcd1602_i2c.h"
 #include "sdkconfig.h"
 
@@ -30,8 +32,7 @@
 #define T0 298.15 // 25 + 273.15
 
 #define SAMPLING_FREQUENCY 20 // HZ
-#define PID_MAXOUTPUT \
-    1023                                        // Maximum control output magnitude (change this if your
+#define PID_MAXOUTPUT 1023                                        // Maximum control output magnitude (change this if your
                                                 // microcontroller has a greater max value)
 #define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY // Sampling time (seconds)
 #define CONSTANT_Kp 20.0f                       // Proportional gain
@@ -57,6 +58,14 @@ char buffer[16];
 
 esp_adc_cal_characteristics_t adc_chars;
 static ledc_channel_config_t ledc_channel;
+
+#define e 2.718281828459045235360287471352
+
+float calculateAbsoluteHumidity(float hum, float temp)
+{
+    float UA = ((6.112 * (pow(e, ((17.67 * temp) / (temp + 243.5)))) * hum * 2.1674) / (273.15 + temp));
+    return UA;
+}
 
 uint16_t PID_update(uint16_t currentTemperature)
 {
@@ -95,12 +104,18 @@ float ThermistorReading()
 // ISR handler
 void TemperatureReadTask(void *arg)
 {
+    int highDuration = 0, lowDuration = 0;
+    float relativeHumidity = 0.0, absoluteHumidity = 0.0, temperature = 0.0;
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pdMS_TO_TICKS(50);
-    int highDuration = 0, lowDuration = 0;
     // BaseType_t xWasDelayed;
+    getTim
     xLastWakeTime = xTaskGetTickCount();
     pulseStart = xTaskGetTickCount();
+    
+    setDHTgpio(GPIO_NUM_32); //TODO: change to soldered pin
+    long lastDHTRead = 0;
+    lastDHTRead = xTaskGetTickCount();
     while (1)
     {
         temperatureArray[movingAveragePosition] = round(ThermistorReading());
@@ -112,6 +127,15 @@ void TemperatureReadTask(void *arg)
             temperatureSum += temperatureArray[i];
         }
         currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
+        int ret = readDHT();
+
+        errorHandler(ret);
+
+        relativeHumidity = getHumidity();
+        temperature = getTemperature();
+        absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, temperature);
+
+        ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, temperature);
         // xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
         output = PID_update(currentTemperature);
         pulseDuration = (MAX_OUTPUT_PULSE_DURATION * output) / UPPER_LIMIT_OUTPUT;
