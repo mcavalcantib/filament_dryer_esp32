@@ -30,13 +30,13 @@
 #define R_NTC 100000.0
 #define T0 298.15 // 25 + 273.15
 
-#define SAMPLING_FREQUENCY 20 // HZ
-#define PID_MAXOUTPUT 1023                                        // Maximum control output magnitude (change this if your
+#define SAMPLING_FREQUENCY 20                   // HZ
+#define PID_MAXOUTPUT 1023                      // Maximum control output magnitude (change this if your
                                                 // microcontroller has a greater max value)
 #define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY // Sampling time (seconds)
 #define CONSTANT_Kp 20.0f                       // Proportional gain
 #define CONSTANT_Ki 0.0f                        // Integral gain times SAMPLING_TIME
-#define CONSTANT_Kd 5.0f                       // Derivative gain divided by SAMPLING_TIME
+#define CONSTANT_Kd 5.0f                        // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
 
 #define LOWER_LIMIT_OUTPUT 256
@@ -46,8 +46,8 @@
 
 static const char *TAG = "Filament_Dryer";
 
-static volatile float currentTemperature = 0.0;
-static volatile uint32_t targetTemperature = 70.0, debounceTimeout = 1, lastInterrupt = 0, pulseStart = 0, pulseDuration;
+static volatile float currentTemperature = 0.0, relativeHumidity = 0.0, absoluteHumidity = 0.0, airTemperature = 0.0;
+static volatile uint32_t targetTemperature = 0.0, debounceTimeout = 50, lastInterrupt = 0, pulseStart = 0, pulseDuration;
 static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
@@ -117,7 +117,7 @@ void TemperatureReadTask(void *arg)
             temperatureSum += temperatureArray[i];
         }
         currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
-        
+
         // xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
         output = PID_update(currentTemperature);
         ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, output);
@@ -128,65 +128,50 @@ void TemperatureReadTask(void *arg)
 
 void AirStatusReadTask(void *arg)
 {
-    
-    float relativeHumidity = 0.0, absoluteHumidity = 0.0, temperature = 0.0;
+
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pdMS_TO_TICKS(2500);
     xLastWakeTime = xTaskGetTickCount();
-    
+
     setDHTgpio(GPIO_NUM_32);
     while (1)
     {
         int ret = readDHT();
         errorHandler(ret);
         relativeHumidity = getHumidity();
-        temperature = getTemperature();
-        absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, temperature);
-        ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, temperature);
+        airTemperature = getTemperature();
+        absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, airTemperature);
+        ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, airTemperature);
         xTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
-static void IRAM_ATTR gpio_isr_handler()
+/**
+ * This ISR is triggered on the falling edge of GPIO18 and GPIO5
+ */
+static void IRAM_ATTR gpio_isr_handler(void *arg)
 {
     uint32_t pins = REG_READ(GPIO_IN_REG);
-    if (xTaskGetTickCount() - lastInterrupt > debounceTimeout/portTICK_PERIOD_MS)
+    if (xTaskGetTickCount() - lastInterrupt > debounceTimeout / portTICK_PERIOD_MS)
     {
-        if (pins & 0x80000)
+        if ((int)arg == 1)
         {
-            targetTemperature += 5;
+            // if pin 19 is high and pin 19 is low, its clockwise rotation
+            if (pins & 0x80000)
+            {
+                targetTemperature += 5;
+            }
+            // else its counter counter clockwise rotation
+            else
+            {
+                targetTemperature -= 5;
+            }
         }
-        else
+        else if ((int)arg == 2 && pins & 0x20)
         {
-            targetTemperature -= 5;
+            isHeating = !isHeating;
         }
         lastInterrupt = xTaskGetTickCount();
-    }
-    pins &= ((1ULL << GPIO_NUM_19) | (1ULL << GPIO_NUM_18));
-    targetTemperature = pins;
-    if(pins & (1ULL << GPIO_NUM_19)){
-        targetTemperature += 5;
-    }else{
-        targetTemperature -= 5;
-    }
-    if(pins == 0){
-        targetTemperature += 5;
-    }else if(pins == 1){
-        targetTemperature -= 5;
-    }
-    else{
-        /*nothing*/
-    }
-    if (gpio_get_level(GPIO_NUM_19) == 1)
-    {
-        if (gpio_get_level(GPIO_NUM_19) == gpio_get_level(GPIO_NUM_18))
-        {
-            targetTemperature += 10;
-        }
-        else
-        {
-            targetTemperature -= 10;
-        }
     }
 }
 
@@ -227,14 +212,14 @@ void app_main()
 
     ledc_channel.channel = LEDC_CHANNEL_0;
     ledc_channel.duty = 0;
-    ledc_channel.gpio_num = GPIO_NUM_23;
+    ledc_channel.gpio_num = GPIO_NUM_25;
     ledc_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
     ledc_channel.hpoint = 0;
     ledc_channel.timer_sel = LEDC_TIMER_0;
     ledc_channel_config(&ledc_channel);
 
-    gpio_set_direction(GPIO_NUM_23, GPIO_MODE_OUTPUT);
-    gpio_set_level(GPIO_NUM_23, 0);
+    // gpio_set_direction(GPIO_NUM_25, GPIO_MODE_OUTPUT);
+    // gpio_set_level(GPIO_NUM_25, 0);
 
     // #18
     gpio_config_t io_config = {.intr_type = GPIO_INTR_LOW_LEVEL,
@@ -252,11 +237,27 @@ void app_main()
 
     gpio_config(&io_config2);
 
-    gpio_set_intr_type(GPIO_NUM_18, GPIO_INTR_ANYEDGE);
+    gpio_config_t io_config3 = {.pin_bit_mask = (1ULL << GPIO_NUM_5),
+                                .mode = GPIO_MODE_INPUT,
+                                .pull_up_en = 1,
+                                .pull_down_en = 0};
+
+    gpio_config(&io_config3);
+
+    gpio_set_intr_type(GPIO_NUM_18, GPIO_INTR_NEGEDGE);
+    gpio_set_intr_type(GPIO_NUM_5, GPIO_INTR_NEGEDGE);
     gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
 
-    esp_err_t result =
-        gpio_isr_handler_add(GPIO_NUM_18, gpio_isr_handler, (void *)1);
+    esp_err_t result = gpio_isr_handler_add(GPIO_NUM_18, gpio_isr_handler, (void *)1);
+    if (result == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Handler cadastrado");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Handler não cadastrado");
+    }
+    result = gpio_isr_handler_add(GPIO_NUM_5, gpio_isr_handler, (void *)2);
     if (result == ESP_OK)
     {
         ESP_LOGI(TAG, "Handler cadastrado");
@@ -281,27 +282,26 @@ void app_main()
         temperatureArray[i] = round(ThermistorReading());
     }
     char message[16];
-    //Start the resistence temperature control task
+    // Start the resistence airTemperature control task
     xTaskCreate(&TemperatureReadTask, "TemperatureReadTask", 2048, NULL, 5, NULL);
-    //Start the air status read task
+    // Start the air status read task
     xTaskCreate(&AirStatusReadTask, "AirStatusReadTask", 2048, NULL, 4, NULL);
 
     while (true)
     {
         memset(message, 0, 16);
-        sprintf(message, "%d/%d   ", (int)currentTemperature,
-                (int)targetTemperature);
-
         lcd_put_cur(0, 0);
-        lcd_send_string("Heater: off");
+        // Print a message to the LCD with leading zeros in the float values
+        sprintf(message, "%dc:%.1f:%.1f", (int)airTemperature, relativeHumidity, absoluteHumidity);
+        lcd_send_string(message);
 
         lcd_put_cur(1, 0);
+        memset(message, 0, 16);
+        sprintf(message, "H: %d/%d %s", (int)currentTemperature, (int)targetTemperature, isHeating ? "ON" : "OFF");
         lcd_send_string(message);
-        // gpio_set_level(GPIO_NUM_23, (int)relayStatus);
+        // gpio_set_level(GPIO_NUM_25, (int)relayStatus);
         // relayStatus = !relayStatus;
-        ESP_LOGI(TAG, "Temperature: %d°C/%d°C | Output: %d | PulseDuration: %lu | Heat: %s",
-                 (int)currentTemperature, (int)targetTemperature, output, pulseDuration,
-                 isHeating ? "ON" : "OFF");
+        ESP_LOGI(TAG, "Heat: %s Heater: %d°C/%d°C  Air: T: %.2f RH: %.4f AH: %.4f | Output: %d", isHeating ? "ON" : "OFF", (int)currentTemperature, (int)targetTemperature, airTemperature, relativeHumidity, absoluteHumidity, output);
 
         vTaskDelay(pdMS_TO_TICKS(250));
     }
