@@ -1,9 +1,11 @@
-/*
- * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
+/**
+ * @author Moises Cavalcanti Bezerril Filho
+ * @file filament_dryer.c
+ * @brief This is the main file for the filament dryer project
+ * @version 0.1
+ * @date 2021-03-21
+ * 
+*/
 #include <driver/adc.h>
 #include <driver/ledc.h>
 #include <driver/timer.h>
@@ -21,130 +23,27 @@
 #include "DHT.h"
 #include "lcd1602_i2c.h"
 #include "sdkconfig.h"
+#include "config.h"
 
 #define ADC_CHANNEL ADC1_CHANNEL_7
 #define ADC_WIDTH ADC_WIDTH_BIT_12
 #define ADC_ATTEN ADC_ATTEN_DB_11
-#define BETA 3950
-#define R_REF 10000.0
-#define R_NTC 100000.0
-#define T0 298.15 // 25 + 273.15
 
-#define SAMPLING_FREQUENCY 20                   // HZ
-#define PID_MAXOUTPUT 1023                      // Maximum control output magnitude (change this if your
-                                                // microcontroller has a greater max value)
-#define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY // Sampling time (seconds)
-#define CONSTANT_Kp 20.0f                       // Proportional gain
-#define CONSTANT_Ki 0.0f                        // Integral gain times SAMPLING_TIME
-#define CONSTANT_Kd 5.0f                        // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
-
-#define LOWER_LIMIT_OUTPUT 256
-#define UPPER_LIMIT_OUTPUT 1023
-#define MIN_OUTPUT_PULSE_DURATION 250
-#define MAX_OUTPUT_PULSE_DURATION 1000
 
 static const char *TAG = "Filament_Dryer";
 
-static volatile float currentTemperature = 0.0, relativeHumidity = 0.0, absoluteHumidity = 0.0, airTemperature = 0.0;
 static volatile uint32_t targetTemperature = 0.0, debounceTimeout = 50, lastInterrupt = 0, pulseStart = 0, pulseDuration;
 static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
-uint8_t movingAveragePosition = 0;
-int16_t temperatureArray[MOVING_AVERAGE_SIZE];
-int32_t integral = 0;
+
+//Display message buffer
 char buffer[16];
 
+//Configurations Structs
 esp_adc_cal_characteristics_t adc_chars;
 static ledc_channel_config_t ledc_channel;
 
-#define e 2.718281828459045235360287471352
-
-float calculateAbsoluteHumidity(float hum, float temp)
-{
-    float UA = ((6.112 * (pow(e, ((17.67 * temp) / (temp + 243.5)))) * hum * 2.1674) / (273.15 + temp));
-    return UA;
-}
-
-uint16_t PID_update(uint16_t currentTemperature)
-{
-    // e[k] = r[k] - y[k], error between setpoint and true position
-    int16_t error = targetTemperature - currentTemperature;
-    // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
-    int16_t derivative = round(error / SAMPLING_TIME);
-    // e_i[k+1] = e_i[k] + Tₛ e[k], integral
-    int16_t new_integral = round(integral + error * SAMPLING_TIME);
-
-    // PID formula:
-    // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
-    int16_t control_u = round(CONSTANT_Kp * error + CONSTANT_Ki * integral +
-                              CONSTANT_Kd * derivative);
-    // Clamp the output
-    if (control_u > PID_MAXOUTPUT)
-        control_u = PID_MAXOUTPUT;
-    else if (control_u < 0)
-        control_u = 0;
-    else // Anti-windup
-        integral = new_integral;
-
-    return (uint16_t)control_u;
-}
-
-float ThermistorReading()
-{
-    float voltage_read =
-        esp_adc_cal_raw_to_voltage(adc1_get_raw(ADC_CHANNEL), &adc_chars);
-    float resistance = (R_REF * voltage_read) / (3300 - voltage_read);
-    float logR = log(resistance / R_NTC);
-    float output = 1 / (logR / BETA + 1 / T0) - 273.15;
-    return output;
-}
-
-// ISR handler
-void TemperatureReadTask(void *arg)
-{
-    TickType_t xLastWakeTime;
-    const TickType_t xFrequency = pdMS_TO_TICKS(50);
-    xLastWakeTime = xTaskGetTickCount();
-
-    while (1)
-    {
-        temperatureArray[movingAveragePosition] = round(ThermistorReading());
-        movingAveragePosition = (movingAveragePosition + 1) % MOVING_AVERAGE_SIZE;
-        int temperatureSum = 0;
-        for (int i = 0; i < MOVING_AVERAGE_SIZE; i++)
-        {
-            temperatureSum += temperatureArray[i];
-        }
-        currentTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
-
-        // xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
-        output = PID_update(currentTemperature);
-        ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, output);
-        ledc_update_duty(ledc_channel.speed_mode, ledc_channel.channel);
-        xTaskDelayUntil(&xLastWakeTime, xFrequency);
-    }
-}
-
-void AirStatusReadTask(void *arg)
-{
-
-    TickType_t xLastWakeTime;
-    const TickType_t xFrequency = pdMS_TO_TICKS(2500);
-    xLastWakeTime = xTaskGetTickCount();
-
-    setDHTgpio(GPIO_NUM_32);
-    while (1)
-    {
-        int ret = readDHT();
-        errorHandler(ret);
-        relativeHumidity = getHumidity();
-        airTemperature = getTemperature();
-        absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, airTemperature);
-        ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, airTemperature);
-        xTaskDelayUntil(&xLastWakeTime, xFrequency);
-    }
-}
 
 /**
  * This ISR is triggered on the falling edge of GPIO18 and GPIO5
