@@ -35,19 +35,22 @@
     1023  // Maximum control output magnitude (change this if your
           // microcontroller has a greater max value)
 #define SAMPLING_TIME 1000 / SAMPLING_FREQUENCY  // Sampling time (seconds)
-#define CONSTANT_Kp 20.0f                        // Proportional gain
+#define CONSTANT_Kp 10.0f                        // Proportional gain
 #define CONSTANT_Ki 0.0f  // Integral gain times SAMPLING_TIME
-#define CONSTANT_Kd 5.0f  // Derivative gain divided by SAMPLING_TIME
+#define CONSTANT_Kd 6.0f  // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
 
-#define MAX_HEATER_TEMPERATURE 70
+#define MAX_HEATER_TEMPERATURE 80
+#define MIN_HEATER_TEMPERATURE 45
 
 static const char *TAG = "Filament_Dryer";
 
 static volatile float currentTemperature = 0.0, relativeHumidity = 0.0,
                       absoluteHumidity = 0.0, airTemperature = 0.0;
+
 static volatile uint32_t targetTemperature = 0.0, debounceTimeout = 50,
-                         lastInterrupt = 0, pulseStart = 0, pulseDuration;
+                         lastInterrupt = 0;
+
 static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
@@ -93,21 +96,21 @@ uint16_t PID_update(uint16_t currentTemperature) {
 uint16_t PID_target_update(uint16_t currentTemperature)
 {
     // e[k] = r[k] - y[k], error between setpoint and true position
-    int16_t error = 45 - currentTemperature;
+    int16_t error = 50 - currentTemperature;
     // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
-    int16_t derivative = round(error / SAMPLING_TIME);
+    int16_t derivative = round(error / 3000);
     // e_i[k+1] = e_i[k] + Tₛ e[k], integral
-    int16_t new_integral = round(airIntegral + error * 3);
+    int16_t new_integral = round(airIntegral + error * 3000);
 
     // PID formula:
     // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
-    int16_t control_u = round(20 * error +(airIntegral/100) +
-                              100 * derivative);
+    int16_t control_u = round(1 * error + airIntegral*0.0001f + 100 * derivative);
+    ESP_LOGI(TAG, "PID: error %d derivative %d new_integral %d control_u %d\n", error, derivative, new_integral, control_u);
     // Clamp the output
     if (control_u > MAX_HEATER_TEMPERATURE)
         control_u = MAX_HEATER_TEMPERATURE;
-    else if (control_u < 0)
-        control_u = 0;
+    else if (control_u < MIN_HEATER_TEMPERATURE)
+        control_u = MIN_HEATER_TEMPERATURE;
     else // Anti-windup
         airIntegral = new_integral;
 
@@ -162,7 +165,7 @@ void AirStatusReadTask(void *arg) {
         absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, airTemperature);
         targetTemperature = PID_target_update(airTemperature);
         targetTemperature = targetTemperature > MAX_HEATER_TEMPERATURE ? MAX_HEATER_TEMPERATURE : targetTemperature;
-        ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, airTemperature);
+        // ESP_LOGI(TAG, "targetTemperature: %.1f\n", targetTemperature);
         xTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
@@ -280,7 +283,7 @@ void app_main() {
 
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C initialized successfully");
-
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
     lcd_init();
     lcd_clear();
     lcd_clear();
@@ -313,12 +316,12 @@ void app_main() {
         lcd_send_string(screen_text);
         // gpio_set_level(GPIO_NUM_25, (int)relayStatus);
         // relayStatus = !relayStatus;
-        ESP_LOGI(TAG,
-                 "Heat: %s Heater: %d°C/%d°C  Air: T: %.2f RH: %.4f AH: %.4f | "
-                 "Output: %d",
-                 isHeating ? "ON" : "OFF", (int)currentTemperature,
-                 (int)targetTemperature, airTemperature, relativeHumidity,
-                 absoluteHumidity, output);
+        // ESP_LOGI(TAG,
+        //          "Heat: %s Heater: %d°C/%d°C  Air: T: %.2f RH: %.4f AH: %.4f | "
+        //          "Output: %d",
+        //          isHeating ? "ON" : "OFF", (int)currentTemperature,
+        //          (int)targetTemperature, airTemperature, relativeHumidity,
+        //          absoluteHumidity, output);
 
         vTaskDelay(pdMS_TO_TICKS(250));
     }
