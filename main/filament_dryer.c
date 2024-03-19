@@ -39,10 +39,7 @@
 #define CONSTANT_Kd 5.0f                        // Derivative gain divided by SAMPLING_TIME
 #define MOVING_AVERAGE_SIZE 10
 
-#define LOWER_LIMIT_OUTPUT 256
-#define UPPER_LIMIT_OUTPUT 1023
-#define MIN_OUTPUT_PULSE_DURATION 250
-#define MAX_OUTPUT_PULSE_DURATION 1000
+#define MAX_HEATER_TEMPERATURE 70
 
 static const char *TAG = "Filament_Dryer";
 
@@ -52,7 +49,7 @@ static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
 int16_t temperatureArray[MOVING_AVERAGE_SIZE];
-int32_t integral = 0;
+int32_t integral = 0, airIntegral = 0;
 char buffer[16];
 
 esp_adc_cal_characteristics_t adc_chars;
@@ -86,6 +83,30 @@ uint16_t PID_update(uint16_t currentTemperature)
         control_u = 0;
     else // Anti-windup
         integral = new_integral;
+
+    return (uint16_t)control_u;
+}
+
+uint16_t PID_target_update(uint16_t currentTemperature)
+{
+    // e[k] = r[k] - y[k], error between setpoint and true position
+    int16_t error = 45 - currentTemperature;
+    // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
+    int16_t derivative = round(error / SAMPLING_TIME);
+    // e_i[k+1] = e_i[k] + Tₛ e[k], integral
+    int16_t new_integral = round(airIntegral + error * 3);
+
+    // PID formula:
+    // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
+    int16_t control_u = round(20 * error +(airIntegral/100) +
+                              100 * derivative);
+    // Clamp the output
+    if (control_u > MAX_HEATER_TEMPERATURE)
+        control_u = MAX_HEATER_TEMPERATURE;
+    else if (control_u < 0)
+        control_u = 0;
+    else // Anti-windup
+        airIntegral = new_integral;
 
     return (uint16_t)control_u;
 }
@@ -141,6 +162,8 @@ void AirStatusReadTask(void *arg)
         relativeHumidity = getHumidity();
         airTemperature = getTemperature();
         absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, airTemperature);
+        targetTemperature = PID_target_update(airTemperature);
+        targetTemperature = targetTemperature > MAX_HEATER_TEMPERATURE ? MAX_HEATER_TEMPERATURE : targetTemperature;
         ESP_LOGI(TAG, "rel Hum: %.1f abs Hum: %.1f Tmp: %.1f\n", relativeHumidity, absoluteHumidity, airTemperature);
         xTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
@@ -159,12 +182,12 @@ static void IRAM_ATTR gpio_isr_handler(void *arg)
             // if pin 19 is high and pin 19 is low, its clockwise rotation
             if (pins & 0x80000)
             {
-                targetTemperature += 5;
+                // targetTemperature += 5;
             }
             // else its counter counter clockwise rotation
             else
             {
-                targetTemperature -= 5;
+                // targetTemperature -= 5;
             }
         }
         else if ((int)arg == 2 && pins & 0x20)
@@ -272,6 +295,7 @@ void app_main()
 
     lcd_init();
     lcd_clear();
+    lcd_clear();
 
     // sprintf(buffer, "val=%.2f", num);
     // lcd_put_cur(0, 0);
@@ -281,7 +305,7 @@ void app_main()
     {
         temperatureArray[i] = round(ThermistorReading());
     }
-    char message[16];
+    char screen_text[16];
     // Start the resistence airTemperature control task
     xTaskCreate(&TemperatureReadTask, "TemperatureReadTask", 2048, NULL, 5, NULL);
     // Start the air status read task
@@ -289,16 +313,16 @@ void app_main()
 
     while (true)
     {
-        memset(message, 0, 16);
+        memset(screen_text, 0, 16);
         lcd_put_cur(0, 0);
-        // Print a message to the LCD with leading zeros in the float values
-        sprintf(message, "%dc:%.1f:%.1f", (int)airTemperature, relativeHumidity, absoluteHumidity);
-        lcd_send_string(message);
+        // Print a screen_text to the LCD with leading zeros in the float values
+        sprintf(screen_text, "%.1f %.1f %.1f", airTemperature, relativeHumidity, absoluteHumidity);
+        lcd_send_string(screen_text);
 
         lcd_put_cur(1, 0);
-        memset(message, 0, 16);
-        sprintf(message, "H: %d/%d %s", (int)currentTemperature, (int)targetTemperature, isHeating ? "ON" : "OFF");
-        lcd_send_string(message);
+        memset(screen_text, 0, 16);
+        sprintf(screen_text, "%.1f %d", currentTemperature, (int)targetTemperature );
+        lcd_send_string(screen_text);
         // gpio_set_level(GPIO_NUM_25, (int)relayStatus);
         // relayStatus = !relayStatus;
         ESP_LOGI(TAG, "Heat: %s Heater: %d°C/%d°C  Air: T: %.2f RH: %.4f AH: %.4f | Output: %d", isHeating ? "ON" : "OFF", (int)currentTemperature, (int)targetTemperature, airTemperature, relativeHumidity, absoluteHumidity, output);
