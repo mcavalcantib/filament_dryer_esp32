@@ -104,7 +104,7 @@ uint16_t PID_target_update(uint16_t currentTemperature)
 
     // PID formula:
     // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
-    int16_t control_u = round(1 * error + airIntegral*0.0001f + 100 * derivative);
+    int16_t control_u = round(5 * error + airIntegral*0.001f + 100 * derivative);
     ESP_LOGI(TAG, "PID: error %d derivative %d new_integral %d control_u %d\n", error, derivative, new_integral, control_u);
     // Clamp the output
     if (control_u > MAX_HEATER_TEMPERATURE)
