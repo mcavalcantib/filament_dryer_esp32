@@ -55,8 +55,10 @@ static volatile bool isHeating = false, dataPulse = false, outputState = false;
 volatile uint16_t output = 0;
 uint8_t movingAveragePosition = 0;
 int16_t temperatureArray[MOVING_AVERAGE_SIZE];
-int32_t integral = 0, airIntegral = 0;
+int32_t integral = 0;
+float airIntegral = 0;
 char buffer[16];
+bool ledStatus = false;
 
 esp_adc_cal_characteristics_t adc_chars;
 static ledc_channel_config_t ledc_channel;
@@ -93,28 +95,30 @@ uint16_t PID_update(uint16_t currentTemperature) {
     return (uint16_t)control_u;
 }
 
-uint16_t PID_target_update(uint16_t currentTemperature)
+float PID_target_update(float currentTemperature)
 {
     // e[k] = r[k] - y[k], error between setpoint and true position
-    int16_t error = 50 - currentTemperature;
+    float error = 50.0f - currentTemperature;
     // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
-    int16_t derivative = round(error / 3000);
+    // int16_t derivative = round(error / 3000);
     // e_i[k+1] = e_i[k] + Tₛ e[k], integral
-    int16_t new_integral = round(airIntegral + error * 3000);
+    // float new_integral = airIntegral + error * 3000;
 
     // PID formula:
     // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
-    int16_t control_u = round(5 * error + airIntegral*0.001f + 100 * derivative);
-    ESP_LOGI(TAG, "PID: error %d derivative %d new_integral %d control_u %d\n", error, derivative, new_integral, control_u);
+    // int16_t control_u = round(3 * error + airIntegral*0.000f + 0 * derivative);
+    float control_u = 20 * error;
+    ESP_LOGI(TAG, "PID: error %.2f control_u %.4f\n", error, control_u);
+    // ESP_LOGI(TAG, "PID: error %d derivative %d new_integral %.4f control_u %d\n", error, derivative, new_integral, control_u);
+
+    // control_u += MIN_HEATER_TEMPERATURE;
     // Clamp the output
     if (control_u > MAX_HEATER_TEMPERATURE)
         control_u = MAX_HEATER_TEMPERATURE;
-    else if (control_u < MIN_HEATER_TEMPERATURE)
-        control_u = MIN_HEATER_TEMPERATURE;
-    else // Anti-windup
-        airIntegral = new_integral;
+    // else // Anti-windup
+    //     airIntegral = new_integral;
 
-    return (uint16_t)control_u;
+    return control_u;
 }
 
 float ThermistorReading()
@@ -156,15 +160,14 @@ void AirStatusReadTask(void *arg) {
     const TickType_t xFrequency = pdMS_TO_TICKS(2500);
     xLastWakeTime = xTaskGetTickCount();
 
-    setDHTgpio(GPIO_NUM_32);
+    setDHTgpio(GPIO_NUM_23);
     while (1) {
         int ret = readDHT();
         errorHandler(ret);
         relativeHumidity = getHumidity();
         airTemperature = getTemperature();
         absoluteHumidity = calculateAbsoluteHumidity(relativeHumidity, airTemperature);
-        targetTemperature = PID_target_update(airTemperature);
-        targetTemperature = targetTemperature > MAX_HEATER_TEMPERATURE ? MAX_HEATER_TEMPERATURE : targetTemperature;
+        targetTemperature = (int)PID_target_update(airTemperature);
         // ESP_LOGI(TAG, "targetTemperature: %.1f\n", targetTemperature);
         xTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
@@ -237,8 +240,8 @@ void app_main() {
     ledc_channel.timer_sel = LEDC_TIMER_0;
     ledc_channel_config(&ledc_channel);
 
-    // gpio_set_direction(GPIO_NUM_25, GPIO_MODE_OUTPUT);
-    // gpio_set_level(GPIO_NUM_25, 0);
+    gpio_set_direction(GPIO_NUM_26, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_26, 1);
 
     // #18
     gpio_config_t io_config = {.intr_type = GPIO_INTR_LOW_LEVEL,
@@ -312,7 +315,7 @@ void app_main() {
 
         lcd_put_cur(1, 0);
         memset(screen_text, 0, 16);
-        sprintf(screen_text, "%.1f %d", currentTemperature, (int)targetTemperature );
+        sprintf(screen_text, "%.1f %d   ", currentTemperature, (int)targetTemperature );
         lcd_send_string(screen_text);
         // gpio_set_level(GPIO_NUM_25, (int)relayStatus);
         // relayStatus = !relayStatus;
@@ -322,7 +325,8 @@ void app_main() {
         //          isHeating ? "ON" : "OFF", (int)currentTemperature,
         //          (int)targetTemperature, airTemperature, relativeHumidity,
         //          absoluteHumidity, output);
-
+        gpio_set_level(GPIO_NUM_26, 1);
+        // ledStatus = !ledStatus;
         vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
